@@ -58,6 +58,141 @@ class Comic_Issue_Automation:
         await asyncio.sleep(2)  # Additional wait for JavaScript to initialize
         print("Page loaded with All Pages and High Quality settings")
 
+    async def extract_image_urls(self, page: Page) -> List[str]:
+        """
+        Extract all image URLs from the comic reader page.
+        This handles both already-loaded images and lazy-loaded images.
+        IMPORTANT: Returns URLs in the correct reading order.
+        """
+        
+        # First, let's try to trigger all lazy loading by scrolling
+        print("  Scrolling to trigger lazy loading...")
+        
+        # Get initial page height
+        scroll_height = await page.evaluate("document.body.scrollHeight")
+        viewport_height = await page.evaluate("window.innerHeight")
+        
+        current_position = 0
+        scroll_step = viewport_height // 2
+        
+        # Progressive scrolling to trigger lazy loading
+        while current_position < scroll_height:
+            await page.evaluate(f"window.scrollTo(0, {current_position})")
+            await asyncio.sleep(0.5)  # Wait for images to load
+            
+            # Check if new content was added
+            new_scroll_height = await page.evaluate("document.body.scrollHeight")
+            if new_scroll_height > scroll_height:
+                scroll_height = new_scroll_height
+                print(f"    New content loaded, height: {scroll_height}px")
+            
+            current_position += scroll_step
+        
+        # Scroll to bottom
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(1)
+        
+        # Method 1: Try to call LoadNextPages function directly if it exists
+        try:
+            function_exists = await page.evaluate("""
+                () => {
+                    if (typeof LoadNextPages === 'function') {
+                        // Try to load all pages at once
+                        for (let i = 0; i < 100; i++) {
+                            LoadNextPages(5);
+                        }
+                        return true;
+                    }
+                    return false;
+                }
+            """)
+            
+            if function_exists:
+                print("  LoadNextPages function called")
+                await asyncio.sleep(2)  # Wait for images to load
+        except Exception as e:
+            print(f"  Could not call LoadNextPages: {e}")
+        
+        # IMPROVED METHOD: Get URLs in order from both JS array and DOM
+        # This ensures we maintain the correct page order
+        ordered_urls = await page.evaluate("""
+            () => {
+                const urls = [];
+                
+                // First priority: Get from DOM in order (already loaded images)
+                const domImages = document.querySelectorAll('#divImage img');
+                const domUrls = [];
+                
+                for (let img of domImages) {
+                    const src = img.getAttribute('src');
+                    if (src && 
+                        !src.includes('blank.gif') && 
+                        !src.includes('trans.png') &&
+                        !src.includes('loading.gif')) {
+                        domUrls.push(src);
+                    } else {
+                        // Push null for placeholder images to maintain order
+                        domUrls.push(null);
+                    }
+                }
+                
+                // Second priority: Get from JavaScript array (for lazy-loaded images)
+                let jsUrls = [];
+                if (typeof _q1HQcHOD6h8 !== 'undefined' && Array.isArray(_q1HQcHOD6h8)) {
+                    for (let encoded of _q1HQcHOD6h8) {
+                        try {
+                            if (typeof cWgp3Ezg9eE === 'function') {
+                                const decoded = cWgp3Ezg9eE(5, encoded);
+                                if (decoded && decoded.includes('http')) {
+                                    jsUrls.push(decoded);
+                                }
+                            } else {
+                                // Fallback URL construction
+                                const baseUrl = 'https://2.bp.blogspot.com/pw/AP1Gcz';
+                                jsUrls.push(baseUrl + encoded);
+                            }
+                        } catch (e) {
+                            console.error('Error decoding URL:', e);
+                        }
+                    }
+                }
+                
+                // Merge URLs: Use DOM URLs where available, fill gaps with JS array URLs
+                let jsIndex = 0;
+                for (let i = 0; i < domUrls.length; i++) {
+                    if (domUrls[i]) {
+                        urls.push(domUrls[i]);
+                    } else if (jsIndex < jsUrls.length) {
+                        // Fill placeholder with JS URL
+                        urls.push(jsUrls[jsIndex]);
+                        jsIndex++;
+                    }
+                }
+                
+                // Add any remaining JS URLs that weren't used
+                while (jsIndex < jsUrls.length) {
+                    urls.push(jsUrls[jsIndex]);
+                    jsIndex++;
+                }
+                
+                // Remove any remaining nulls and duplicates while preserving order
+                const finalUrls = [];
+                const seen = new Set();
+                for (const url of urls) {
+                    if (url && !seen.has(url)) {
+                        finalUrls.push(url);
+                        seen.add(url);
+                    }
+                }
+                
+                return finalUrls;
+            }
+        """)
+        
+        print(f"  Found {len(ordered_urls)} unique URLs in correct order")
+
+        return ordered_urls
+
     def cleanup(self) -> None:
         """Remove the temporary images directory."""
         if self._images_directory.exists():
@@ -80,7 +215,10 @@ class Comic_Issue_Automation:
             # Step 1: Open issue and select high quality and all pages
             await self.open_issue(page)
 
-            # Step 2: Extract all CDN image URLs IN ORDER
+            # Step 2: Extract all CDN image URLs IN 
+            print("\nExtracting image URLs...")
+            image_urls = await self.extract_image_urls(page)
+            print(image_urls)
 
             # Step 3: Download all images (concurrently but track order)
 
@@ -113,7 +251,6 @@ async def main():
             viewport={"width": 1920, "height": 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
-        page = await browser_context.new_page()
         comic_issue = Comic_Issue(
             title="Rick and Morty: Ricklemania Issue #1",
             url="https://readcomiconline.li/Comic/Rick-and-Morty-Ricklemania/Issue-1?id=237074",
@@ -122,7 +259,7 @@ async def main():
             comic_issue_automation = Comic_Issue_Automation(
                 browser_context, comic_issue, Path("./my_comics"), session
             )
-            await comic_issue_automation.open_issue(page)
+            await comic_issue_automation.run()
 
 
 if __name__ == "__main__":
