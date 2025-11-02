@@ -193,6 +193,86 @@ class Comic_Issue_Automation:
 
         return ordered_urls
 
+    async def download_image_urls(self, urls: List[str]) -> List[Tuple[int, Path]]:
+        """
+        Download all image URLs to the images directory.
+        Returns a list of (index, filepath) tuples to maintain order.
+        """
+        if not urls:
+            print("  No URLs to download")
+            return []
+            
+        print(f"  Downloading {len(urls)} images...")
+        image_download_semaphore = asyncio.Semaphore(10)  # Concurrent downloads; Let's later make this into a configuration
+        downloaded_files = []
+
+        # download urls worker
+        async def download_image(image_url: str, image_index: int) -> Optional[Tuple[int, Path]]:
+            """Download a single image with retry logic."""
+            async with image_download_semaphore:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        # Add timeout for the request
+                        timeout = aiohttp.ClientTimeout(total=30)
+                        async with self._http_session.get(
+                            image_url, 
+                            timeout=timeout,
+                            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                        ) as response:
+                            response.raise_for_status()
+                            content = await response.read()
+                            
+                            # Determine file extension from content-type
+                            content_type = response.headers.get('content-type', '')
+                            if 'jpeg' in content_type or 'jpg' in content_type:
+                                ext = '.jpg'
+                            elif 'png' in content_type:
+                                ext = '.png'
+                            elif 'gif' in content_type:
+                                ext = '.gif'
+                            else:
+                                # Default to jpg for comic pages
+                                ext = '.jpg'
+                            
+                            # Save with zero-padded filename for proper ordering
+                            # Use 3 digits for page number (supports up to 999 pages)
+                            filename = f"page_{image_index:03d}{ext}"
+                            file_path = self._images_directory / filename
+                            
+                            # Maybe later refactor this into using streams to write chunks for better performance
+                            async with aiofiles.open(file_path, mode="wb") as img_file:
+                                await img_file.write(content)
+                            
+                            print(f"    ✓ Downloaded page {image_index + 1}/{len(urls)}")
+                            return (image_index, file_path)
+                            
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            print(f"    ✗ Failed to download page {image_index + 1}: {e}")
+                            return None
+                        else:
+                            await asyncio.sleep(2)  # Wait before retry
+                
+                return None
+
+        # Create tasks for all downloads with their original indices
+        tasks = [download_image(url, i) for i, url in enumerate(urls)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Filter out failed downloads and exceptions
+        for result in results:
+            if isinstance(result, tuple) and result is not None:
+                downloaded_files.append(result)
+            elif isinstance(result, Exception):
+                print(f"    ✗ Download exception: {result}")
+        
+        # Sort by index to maintain original order
+        downloaded_files.sort(key=lambda x: x[0])
+        
+        print(f"  Download complete: {len(downloaded_files)}/{len(urls)} successful")
+        return downloaded_files
+
     def cleanup(self) -> None:
         """Remove the temporary images directory."""
         if self._images_directory.exists():
@@ -221,6 +301,12 @@ class Comic_Issue_Automation:
             print(image_urls)
 
             # Step 3: Download all images (concurrently but track order)
+            print("\nDownloading images...")
+            ordered_files = await self.download_image_urls(image_urls)
+            
+            if not ordered_files:
+                print("  ✗ No images downloaded successfully!")
+                return None
 
             # Step 4: Create CBZ file with images in correct order
 

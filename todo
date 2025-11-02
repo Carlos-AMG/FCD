@@ -1,0 +1,3 @@
+Refactor Comic_Issue_Automation download_image_urls download_image worker into using streams to write chunks instead of awaiting the response and writing the whole file
+Refactor Comic_Issue_Automation extract_image_urls into reading .js script files instead of hardcoding them as strings
+Add logging to whole application (have separate loggers per each concurrent task (issues and download worker (or a lock here at this level)))
