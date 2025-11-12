@@ -1,4 +1,4 @@
-() => {
+(() => {
     const urls = [];
 
     // First priority: Get from DOM in order (already loaded images)
@@ -68,4 +68,4 @@
     }
 
     return finalUrls;
-}
+})();

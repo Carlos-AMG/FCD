@@ -35,6 +35,18 @@ class Comic_Issue_Automation:
 
         self._images_directory.mkdir(exist_ok=True, parents=True)
 
+    # maybe add this into utils because Comic_Downloader do it
+    def _sanitize_filename(self, filename: str) -> str:
+        """Sanitize filename for filesystem compatibility."""
+        # Remove or replace invalid characters
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        # Remove leading/trailing spaces and dots
+        filename = filename.strip('. ')
+        # Limit length to avoid filesystem issues
+        if len(filename) > 200:
+            filename = filename[:200]
+        return filename
+
     # Maybe we can later make this configurable so that users can configure if they want high or low quality
     async def open_issue(self, page: Page) -> None:
         """Open the comic issue page and configure reading settings."""
@@ -273,6 +285,33 @@ class Comic_Issue_Automation:
         print(f"  Download complete: {len(downloaded_files)}/{len(urls)} successful")
         return downloaded_files
 
+    def create_cbz(self, ordered_files: List[Tuple[int, Path]]) -> Path:
+        """
+        Create a CBZ file from the downloaded images in the correct order.
+        
+        Args:
+            ordered_files: List of (index, filepath) tuples sorted by index
+        """
+        # Sanitize the title for the filename
+        safe_title = self._sanitize_filename(self._comic_issue.title)
+        output_file = self._directory / f"{safe_title}.cbz"
+        
+        print(f"Creating CBZ file: {output_file.name}")
+        
+        if not ordered_files:
+            raise ValueError("No images found to create CBZ")
+        
+        with zipfile.ZipFile(output_file, "w", zipfile.ZIP_DEFLATED) as cbz:
+            for index, img_file in ordered_files:
+                # Add to zip with a properly ordered filename
+                # This ensures correct reading order in CBZ readers
+                archive_name = f"page_{index:03d}{img_file.suffix}"
+                cbz.write(img_file, archive_name)
+                print(f"    Added to CBZ: {archive_name}")
+        
+        print(f"CBZ created: {output_file.name} ({len(ordered_files)} pages)")
+        return output_file
+
     def cleanup(self) -> None:
         """Remove the temporary images directory."""
         if self._images_directory.exists():
@@ -298,23 +337,31 @@ class Comic_Issue_Automation:
             # Step 2: Extract all CDN image URLs IN 
             print("\nExtracting image URLs...")
             image_urls = await self.extract_image_urls(page)
-            print(image_urls)
 
             # Step 3: Download all images (concurrently but track order)
             print("\nDownloading images...")
             ordered_files = await self.download_image_urls(image_urls)
             
             if not ordered_files:
-                print("  ✗ No images downloaded successfully!")
+                print("No images downloaded successfully!")
                 return None
 
             # Step 4: Create CBZ file with images in correct order
+            print("\nCreating CBZ file...")
+            cbz_path = await asyncio.get_event_loop().run_in_executor(
+                None, self.create_cbz, ordered_files
+            )
 
             # Step 5: Cleanup temporary files
-
+            print("\nCleaning up...")
+            await asyncio.get_event_loop().run_in_executor(
+                None, self.cleanup
+            )
+            
+            print(f"\n✅ Successfully created: {cbz_path.name}")
             return cbz_path
         except Exception as e:
-            print(f"\n❌ Error processing {self._comic_issue.title}: {e}")
+            print(f"\nError processing {self._comic_issue.title}: {e}")
             import traceback
             traceback.print_exc()
             # Cleanup on error
@@ -335,7 +382,7 @@ async def main():
         # make this configurable
         browser_context = await browser.new_context(
             viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
         comic_issue = Comic_Issue(
             title="Rick and Morty: Ricklemania Issue #1",
