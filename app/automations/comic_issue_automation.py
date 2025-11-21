@@ -35,6 +35,15 @@ class Comic_Issue_Automation:
 
         self._images_directory.mkdir(exist_ok=True, parents=True)
 
+    # Maybe this should go in utils
+    async def _load_js_script(self, name: str) -> str:
+        """Load a js script content from js_scripts"""
+        base_dir = Path(__file__).parent / "js_scripts"
+        js_path = base_dir / name
+        assert js_path.exists(), f"js file: {js_path} doesn't exist"
+        async with aiofiles.open(js_path, "r") as file:
+            return await file.read()
+
     # maybe add this into utils because Comic_Downloader do it
     def _sanitize_filename(self, filename: str) -> str:
         """Sanitize filename for filesystem compatibility."""
@@ -103,21 +112,13 @@ class Comic_Issue_Automation:
         # Scroll to bottom
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await asyncio.sleep(1)
+
+        js_load_next_pages = await self._load_js_script("load_next_pages.js")
+        js_extract_urls = await self._load_js_script("extract_image_urls.js")
         
         # Method 1: Try to call LoadNextPages function directly if it exists
         try:
-            function_exists = await page.evaluate("""
-                () => {
-                    if (typeof LoadNextPages === 'function') {
-                        // Try to load all pages at once
-                        for (let i = 0; i < 100; i++) {
-                            LoadNextPages(5);
-                        }
-                        return true;
-                    }
-                    return false;
-                }
-            """)
+            function_exists = await page.evaluate(js_load_next_pages)
             
             if function_exists:
                 print("  LoadNextPages function called")
@@ -127,79 +128,7 @@ class Comic_Issue_Automation:
         
         # IMPROVED METHOD: Get URLs in order from both JS array and DOM
         # This ensures we maintain the correct page order
-        ordered_urls = await page.evaluate("""
-            () => {
-                const urls = [];
-                
-                // First priority: Get from DOM in order (already loaded images)
-                const domImages = document.querySelectorAll('#divImage img');
-                const domUrls = [];
-                
-                for (let img of domImages) {
-                    const src = img.getAttribute('src');
-                    if (src && 
-                        !src.includes('blank.gif') && 
-                        !src.includes('trans.png') &&
-                        !src.includes('loading.gif')) {
-                        domUrls.push(src);
-                    } else {
-                        // Push null for placeholder images to maintain order
-                        domUrls.push(null);
-                    }
-                }
-                
-                // Second priority: Get from JavaScript array (for lazy-loaded images)
-                let jsUrls = [];
-                if (typeof _q1HQcHOD6h8 !== 'undefined' && Array.isArray(_q1HQcHOD6h8)) {
-                    for (let encoded of _q1HQcHOD6h8) {
-                        try {
-                            if (typeof cWgp3Ezg9eE === 'function') {
-                                const decoded = cWgp3Ezg9eE(5, encoded);
-                                if (decoded && decoded.includes('http')) {
-                                    jsUrls.push(decoded);
-                                }
-                            } else {
-                                // Fallback URL construction
-                                const baseUrl = 'https://2.bp.blogspot.com/pw/AP1Gcz';
-                                jsUrls.push(baseUrl + encoded);
-                            }
-                        } catch (e) {
-                            console.error('Error decoding URL:', e);
-                        }
-                    }
-                }
-                
-                // Merge URLs: Use DOM URLs where available, fill gaps with JS array URLs
-                let jsIndex = 0;
-                for (let i = 0; i < domUrls.length; i++) {
-                    if (domUrls[i]) {
-                        urls.push(domUrls[i]);
-                    } else if (jsIndex < jsUrls.length) {
-                        // Fill placeholder with JS URL
-                        urls.push(jsUrls[jsIndex]);
-                        jsIndex++;
-                    }
-                }
-                
-                // Add any remaining JS URLs that weren't used
-                while (jsIndex < jsUrls.length) {
-                    urls.push(jsUrls[jsIndex]);
-                    jsIndex++;
-                }
-                
-                // Remove any remaining nulls and duplicates while preserving order
-                const finalUrls = [];
-                const seen = new Set();
-                for (const url of urls) {
-                    if (url && !seen.has(url)) {
-                        finalUrls.push(url);
-                        seen.add(url);
-                    }
-                }
-                
-                return finalUrls;
-            }
-        """)
+        ordered_urls = await page.evaluate(js_extract_urls)
         
         print(f"  Found {len(ordered_urls)} unique URLs in correct order")
 
@@ -385,8 +314,8 @@ async def main():
             # user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
         comic_issue = Comic_Issue(
-            title="Rick and Morty: Ricklemania Issue #1",
-            url="https://readcomiconline.li/Comic/Rick-and-Morty-Ricklemania/Issue-1?id=237074",
+            title="Absolute Carnage Issue #1",
+            url="https://readcomiconline.li/Comic/Absolute-Carnage/Issue-1?id=159079",
         )
         async with aiohttp.ClientSession() as session:
             comic_issue_automation = Comic_Issue_Automation(
